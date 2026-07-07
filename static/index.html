@@ -2,9 +2,6 @@
 <meta charset="utf-8"/>
 <title>Pi-Nisse</title>
 
-<button id="mic">🎙️ Tal → Text</button>
-<span id="micStatus" style="margin-left:8px; opacity:.8;"></span>
-
 <style>
   body {
     font-family: system-ui, sans-serif;
@@ -18,6 +15,7 @@
   }
   img#pinisse { width: 360px; border-radius: 50%; box-shadow: 0 0 20px #123312; margin-bottom: 10px; }
   h2 { margin-top: 5px; color: #9ef3b8; }
+  .version { font-size: .85rem; opacity: .65; margin: -4px 0 12px; }
   textarea {
     width: 100%; min-height: 120px; background-color: #174d2a; color: #e0f2e9;
     border: 1px solid #5da271; border-radius: 10px; padding: 12px;
@@ -34,6 +32,15 @@
   .ha-controls { display:flex; gap:8px; justify-content:center; align-items:center; margin:10px 0 16px; flex-wrap:wrap; }
   .ha-controls input[type="range"] { width: 220px; }
 
+  .mic-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    min-height: 150px;
+    margin: 12px 0 18px;
+  }
+
   /* Stor, tummvänlig mic-knapp */
   #mic {
     display: inline-flex;
@@ -42,7 +49,14 @@
     font-size: 1.3rem;
     padding: 42px 38px;  /* höjd x bredd */
     border-radius: 999px;
-    margin: 16px 0;
+    margin: 0;
+    min-width: 266px;
+  }
+  #micStatus {
+    min-height: 1.4em;
+    max-width: 100%;
+    opacity: .82;
+    overflow-wrap: anywhere;
   }
   @media (max-width: 600px) {
     #mic { width: 100%; }
@@ -51,6 +65,12 @@
 
 <img id="pinisse" src="/static/PiNisse.webp" alt="Pi-Nisse">
 <h2>Chatta med π-Nisse</h2>
+<div class="version">v20260707a</div>
+
+<div class="mic-panel">
+  <button id="mic" aria-pressed="false">🎙️ Håll inne och prata</button>
+  <span id="micStatus">Håll inne knappen medan du pratar. Släpp musknappen eller fingret för att skicka.</span>
+</div>
 
 <!-- ====== HA controls ====== -->
 <div class="ha-controls">
@@ -348,6 +368,7 @@ langSel.addEventListener('change',()=>{
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const micBtn=document.getElementById('mic');
 const micStatus=document.getElementById('micStatus');
+const idleMicStatus="Håll inne knappen medan du pratar. Släpp musknappen eller fingret för att skicka.";
 let rec=null;
 if(SR){
   rec=new SR(); rec.lang=currentLang().code; rec.interimResults=true; rec.maxAlternatives=1;
@@ -371,7 +392,7 @@ if(SR){
   };
   rec.onstart=()=>{
     setListening(true);
-    micStatus.textContent="Lyssnar … släpp för att skicka";
+    micStatus.textContent="Lyssnar … släpp musknappen eller fingret för att skicka.";
     if(stopWhenStarted){
       stopWhenStarted=false;
       setTimeout(stopListening, 0);
@@ -379,7 +400,7 @@ if(SR){
   };
   rec.onerror=e=>{micStatus.textContent="Fel: "+e.error; startPending=false; stopWhenStarted=false; setListening(false);};
   rec.onend=()=>{
-    micStatus.textContent=""; startPending=false; stopWhenStarted=false; setListening(false);
+    micStatus.textContent=idleMicStatus; startPending=false; stopWhenStarted=false; setListening(false);
     const spoken=(finalText || lastInterim).trim();
     finalText="";
     lastInterim="";
@@ -396,7 +417,7 @@ if(SR){
       else interim+=t;
     }
     lastInterim=interim;
-    micStatus.textContent=interim?("Lyssnar … "+interim):"Lyssnar …";
+    micStatus.textContent=interim?("Lyssnar … "+interim):"Lyssnar … släpp för att skicka.";
   };
   micBtn.addEventListener('pointerdown', e=>{
     e.preventDefault();
@@ -404,17 +425,18 @@ if(SR){
     try{speechSynthesis.cancel();}catch{}
     try{
       startPending=true;
+      micStatus.textContent="Startar mikrofon … håll knappen inne.";
       rec.start();
       window.addEventListener('pointerup', stopListening, { once:true });
       window.addEventListener('pointercancel', stopListening, { once:true });
-    }catch{startPending=false;}
+    }catch{startPending=false; micStatus.textContent=idleMicStatus;}
   });
   micBtn.addEventListener('keydown', e=>{
     if(e.key!==" " && e.key!=="Enter") return;
     e.preventDefault();
     if(listening) return;
     try{speechSynthesis.cancel();}catch{}
-    try{startPending=true; rec.start();}catch{startPending=false;}
+    try{startPending=true; micStatus.textContent="Startar mikrofon … håll tangenten nere."; rec.start();}catch{startPending=false; micStatus.textContent=idleMicStatus;}
   });
   micBtn.addEventListener('keyup', e=>{
     if(e.key===" " || e.key==="Enter") stopListening();
