@@ -1,0 +1,523 @@
+<!doctype html>
+<meta charset="utf-8"/>
+<title>Pi-Nisse</title>
+
+<button id="mic">🎙️ Tal → Text</button>
+<span id="micStatus" style="margin-left:8px; opacity:.8;"></span>
+
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    background-color: #0b3d1b;
+    color: #e0f2e9;
+    max-width: 720px;
+    margin: 40px auto;
+    padding: 20px;
+    border-radius: 12px;
+    text-align: center;
+  }
+  img#pinisse { width: 360px; border-radius: 50%; box-shadow: 0 0 20px #123312; margin-bottom: 10px; }
+  h2 { margin-top: 5px; color: #9ef3b8; }
+  textarea {
+    width: 100%; min-height: 120px; background-color: #174d2a; color: #e0f2e9;
+    border: 1px solid #5da271; border-radius: 10px; padding: 12px;
+  }
+  button {
+    background-color: #2d7040; color: #fff; border: none; padding: 10px 20px;
+    border-radius: 8px; cursor: pointer; font-weight: bold;
+  }
+  button:hover { background-color: #3a8f55; }
+  #mic[aria-pressed="true"] { background-color: #b64735; }
+  pre { white-space: pre-wrap; background-color: #174d2a; border-radius: 10px; padding: 12px; border: 1px solid #5da271; text-align: left; }
+  select { background:#174d2a; color:#e0f2e9; border:1px solid #5da271; border-radius:8px; padding:4px; }
+  .toolbar > * { margin: 0 6px 6px 0; }
+  .ha-controls { display:flex; gap:8px; justify-content:center; align-items:center; margin:10px 0 16px; flex-wrap:wrap; }
+  .ha-controls input[type="range"] { width: 220px; }
+
+  /* Stor, tummvänlig mic-knapp */
+  #mic {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    padding: 42px 38px;  /* höjd x bredd */
+    border-radius: 999px;
+    margin: 16px 0;
+  }
+  @media (max-width: 600px) {
+    #mic { width: 100%; }
+  }
+</style>
+
+<img id="pinisse" src="/static/PiNisse.webp" alt="Pi-Nisse">
+<h2>Chatta med π-Nisse</h2>
+
+<!-- ====== HA controls ====== -->
+<div class="ha-controls">
+  <!-- Datarum-ljus -->
+  <button onclick="hookDirect('pinisse_light_datarum_on')">Tänd datarum</button>
+  <button onclick="hookDirect('pinisse_light_datarum_off')">Släck datarum</button>
+
+  <label style="display:flex;align-items:center;gap:8px;">
+    🔆 Datarum:
+    <input id="dimPct" type="range" min="1" max="100" value="22" step="1"
+           oninput="this.nextElementSibling.textContent=this.value + '%'"
+           onchange="dimTo(this.value)">
+    <span>22%</span>
+  </label>
+
+  <!-- Mysrum Ljud & Ljus -->
+  <button onclick="hookDirect('pinisse_mysrum_on')">Mysrum Ljud & Ljus ON</button>
+  <button onclick="hookDirect('pinisse_mysrum_off')">Mysrum Ljud & Ljus OFF</button>
+
+  <!-- Projektor -->
+  <button onclick="hookDirect('pinisse_projector_on')">Projektor ON</button>
+  <button onclick="hookDirect('pinisse_projector_off')">Projektor OFF</button>
+</div>
+<!-- ========================== -->
+
+<textarea id="q" placeholder="Skriv din fråga..."></textarea><br/>
+<button id="send">Skicka</button>
+<pre id="out"></pre>
+<pre id="log" style="white-space:pre-wrap;background:#123312;border:1px solid #5da271;border-radius:10px;padding:12px;margin-top:10px;"></pre>
+
+<script>
+/* ---------- HA webhook helpers (call the proxy) ---------- */
+async function hookDirect(id){
+  try {
+    await fetch(`/api/ha/webhook/${id}`, { method:'POST' });
+  } catch(e){ console.warn('Webhook error', e); }
+}
+
+async function dimTo(pct){
+  pct = Math.max(1, Math.min(100, parseInt(pct,10) || 22));
+  try {
+    await fetch(`/api/ha/webhook/pinisse_light_datarum_dim`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ brightness: pct })
+    });
+  } catch(e){ console.warn('Dim webhook error', e); }
+}
+
+/* ---------- Language handling ---------- */
+const LANG_KEY = "pinisse_lang";
+const langPrefs = JSON.parse(localStorage.getItem(LANG_KEY) || "{}");
+function currentLang() { return langPrefs.code ? langPrefs : { code: "sv-SE", name: "Svenska" }; }
+function setLang(code, name) { localStorage.setItem(LANG_KEY, JSON.stringify({ code, name })); }
+
+const bar = document.createElement('div');
+bar.className = "toolbar";
+bar.innerHTML = `
+  <span>🌐 Språk:</span>
+  <select id="langSel" title="Välj språk">
+    <option value="sv-SE|Svenska">Svenska</option>
+    <option value="en-US|English">English</option>
+  </select>
+  <label style="margin-left:14px;">🔊 Speak <input id="speak" type="checkbox"></label>
+  <span>Voice:</span><select id="voice"></select>
+  <span>Rate:</span><input id="rate" type="range" min="0.6" max="6.4" value="1.0" step="0.05">
+  <span>Pitch:</span><input id="pitch" type="range" min="0.5" max="6.0" value="1.2" step="0.1">
+  <span>Vol:</span><input id="vol" type="range" min="0.0" max="1.0" value="1.0" step="0.05">
+  <button id="reset" title="Ny konversation">Ny konversation</button>
+  <button id="hardreset" title="Rensa chat + TTS">Rensa allt</button>
+`;
+document.body.insertBefore(bar, document.querySelector('textarea'));
+const langSel  = document.getElementById('langSel');
+const initLang = currentLang();
+[...langSel.options].forEach(o => { if (o.value.split("|")[0] === initLang.code) langSel.value = o.value; });
+
+/* ---------- TTS with persistent settings ---------- */
+const STORAGE_KEY = "pinisse_tts";
+const voiceSel = document.getElementById('voice');
+const rateInp  = document.getElementById('rate');
+const pitchInp = document.getElementById('pitch');
+const volInp   = document.getElementById('vol');
+const speakChk = document.getElementById('speak');
+
+function loadPrefs(){ try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch { return {}; } }
+function savePrefs(extra={}) {
+  const cur = loadPrefs();
+  const next = {
+    speak: speakChk.checked,
+    rate: rateInp.value, pitch: pitchInp.value, vol: volInp.value,
+    voiceURI: extra.voiceURI ?? cur.voiceURI, voiceName: extra.voiceName ?? cur.voiceName
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+}
+const prefs = loadPrefs();
+speakChk.checked = prefs.speak ?? true;
+rateInp.value  = prefs.rate  ?? "1.0";
+pitchInp.value = prefs.pitch ?? "1.2";
+volInp.value   = prefs.vol   ?? "1.0";
+
+function getVoicesAsync(timeoutMs=2000){
+  return new Promise(resolve=>{
+    const start=performance.now();
+    const tick=()=>{
+      const v=speechSynthesis.getVoices();
+      if(v && v.length) return resolve(v);
+      if(performance.now()-start>timeoutMs) return resolve(v);
+      setTimeout(tick,50);
+    };
+    if(typeof speechSynthesis!=="undefined"){
+      speechSynthesis.onvoiceschanged=()=>resolve(speechSynthesis.getVoices());
+    }
+    tick();
+  });
+}
+function sortVoices(vs){
+  const want=currentLang().code.toLowerCase();
+  const score=v=>{
+    const L=(v.lang||"").toLowerCase();
+    if(L.startsWith(want)) return 0;
+    if(L.startsWith("sv")) return 1;
+    if(L.startsWith("en")) return 2;
+    return 3;
+  };
+  return [...vs].sort((a,b)=>score(a)-score(b) || a.name.localeCompare(b.name));
+}
+async function populateAndRestoreVoices(){
+  const voices = sortVoices(await getVoicesAsync());
+  voiceSel.innerHTML="";
+  for(const v of voices){
+    const opt=document.createElement('option');
+    opt.value=v.voiceURI||v.name;
+    opt.textContent=`${v.name} (${v.lang})`;
+    opt.dataset.voiceName=v.name;
+    voiceSel.appendChild(opt);
+  }
+  const cur=loadPrefs(); let set=false;
+  if(cur.voiceURI && [...voiceSel.options].some(o=>o.value===cur.voiceURI)){voiceSel.value=cur.voiceURI; set=true;}
+  else if(cur.voiceName){
+    const opt=[...voiceSel.options].find(o=>o.dataset.voiceName===cur.voiceName);
+    if(opt){voiceSel.value=opt.value; set=true;}
+  }
+  if(!set && voiceSel.options.length){
+    const want=currentLang().code.split("-")[0].toLowerCase();
+    const match=[...voiceSel.options].find(o=>o.textContent.toLowerCase().includes(`(${want}`));
+    voiceSel.value=(match?.value)||voiceSel.options[0].value;
+  }
+  const chosen=speechSynthesis.getVoices().find(v=>(v.voiceURI||v.name)===voiceSel.value);
+  savePrefs({voiceURI:chosen?.voiceURI, voiceName:chosen?.name});
+}
+populateAndRestoreVoices();
+
+[voiceSel,rateInp,pitchInp,volInp,speakChk].forEach(el=>{
+  el.addEventListener('change',()=>{
+    const v=speechSynthesis.getVoices().find(v=>(v.voiceURI||v.name)===voiceSel.value);
+    savePrefs({voiceURI:v?.voiceURI, voiceName:v?.name});
+  });
+});
+
+function cleanForTTS(text) {
+  if (!text) return "";
+
+  let t = text;
+
+  // Försök med moderna Unicode-klasser (Chrome/Edge/Firefox etc.)
+  try {
+    t = t.replace(/\p{Extended_Pictographic}/gu, "");
+  } catch (e) {
+    // Fallback för äldre motorer: ta bort typiska emoji-block
+    t = t.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, "");
+  }
+
+  // Ta bort vanliga ASCII-smileys också (:), :D, ;-) osv)
+  t = t.replace(/[:;=8][-^]?[)D(\]]/g, "");
+
+  // Städa upp dubbla mellanslag
+  t = t.replace(/\s{2,}/g, " ").trim();
+
+  return t;
+}
+
+function speak(text){
+  if (!speakChk.checked || !text) return;
+
+  // 🧹 Städa bort emojis + smileys
+  const spoken = cleanForTTS(text);
+  if (!spoken) return;
+
+  try { speechSynthesis.cancel(); } catch {}
+
+  const v = speechSynthesis.getVoices().find(v => (v.voiceURI || v.name) === voiceSel.value);
+  const u = new SpeechSynthesisUtterance(spoken);
+  if (v) u.voice = v;
+
+  u.lang   = v?.lang || currentLang().code;
+  u.rate   = parseFloat(rateInp.value  || "1.0");
+  u.pitch  = parseFloat(pitchInp.value || "1.0");
+  u.volume = parseFloat(volInp.value   || "1.0");
+
+  speechSynthesis.speak(u);
+}
+
+/* ---------- Chat memory ---------- */
+function buildSystemPrompt(){
+  const L=currentLang();
+  if (L.code.startsWith("sv")) {
+    return `
+Du är Pi-Nisse, en vänlig svensk hustomte som hjälper till i hemmet.
+
+Du kan styra:
+- lampan i datarummet
+- mysrummets "Ljud & Ljus"-switch
+- kaffebryggaren
+- projektorn
+
+via webhooks som körs av utvecklaren.
+
+När du BESTÄMMER dig för att tända, släcka eller dimma lampan i datarummet ska du ALLTID skriva en tydlig åtgärdsrad i svaret på formatet:
+
+- "ÅTGÄRD: datarum_on"        = tänd lampan i datarummet
+- "ÅTGÄRD: datarum_off"       = släck lampan i datarummet
+- "ÅTGÄRD: datarum_dim_XX%"   = dimma lampan i datarummet till XX procent (1–100)
+
+När du BESTÄMMER dig för att slå på eller av mysrummets Ljud & Ljus ska du skriva:
+
+- "ÅTGÄRD: mysrum_on"         = slå på mysrummets Ljud & Ljus
+- "ÅTGÄRD: mysrum_off"        = slå av mysrummets Ljud & Ljus
+
+När du BESTÄMMER dig för att slå på eller av kaffet ska du skriva:
+
+- "ÅTGÄRD: coffee_on"         = slå på kaffebryggaren
+- "ÅTGÄRD: coffee_off"        = stäng av kaffebryggaren
+
+När du BESTÄMMER dig för att slå på eller av projektorn ska du skriva:
+
+- "ÅTGÄRD: projector_on"      = starta projektorn
+- "ÅTGÄRD: projector_off"     = stäng av projektorn
+
+VIKTIGT:
+- Om användaren säger något som handlar om ljuset i datarummet, mysrummet, kaffet eller projektorn och en åtgärd är lämplig, SKA du ALLTID skriva en ÅTGÄRD-rad.
+- Skriv bara EN sådan ÅTGÄRD-rad per svar, helst först i svaret.
+- Efter ÅTGÄRD-raden får du skriva en kort, vänlig förklaring på naturlig svenska.
+- När ingen åtgärd behövs ska du INTE skriva någon ÅTGÄRD-rad.
+
+Om användaren säger saker som "det är lite ljust i datarummet" eller "gör det mysigare",
+översätt det själv till en lämplig procent (t.ex. 20–40% för mysigt, 60–80% för lite ljusare).
+
+Håll svaren korta. Svara alltid på svenska.
+`.trim();
+  }
+  return "You are Pi-Nisse, a friendly Swedish house gnome. Keep answers short. Reply in English.";
+}
+
+let messages = JSON.parse(localStorage.getItem("pinisse_chat") || "null") || [{ role:"system", content:buildSystemPrompt() }];
+function saveChat(){ localStorage.setItem("pinisse_chat", JSON.stringify(messages)); }
+function clearChat(){ localStorage.removeItem("pinisse_chat"); }
+function trimHistory(maxTokens=1500){
+  const base=[messages[0]]; let used=0; const rest=messages.slice(1).slice().reverse();
+  for(const m of rest){
+    const t=Math.ceil((m.content||"").length/4);
+    if(used+t>maxTokens) break;
+    used+=t;
+    base.splice(1,0,m);
+  }
+  messages=base;
+}
+function renderLog(){
+  const shown=messages
+    .filter(m=>m.role!=="system")
+    .map(m=>(m.role==="user"?"🟢 Du: ":"🟡 Pi-Nisse: ")+(m.content||""))
+    .join("\n\n");
+  document.getElementById('log').textContent=shown||"— Ny konversation —";
+}
+renderLog();
+function newConversation(){
+  messages=[{role:"system",content:buildSystemPrompt()}];
+  clearChat(); saveChat(); renderLog();
+  document.getElementById('out').textContent="";
+}
+document.getElementById('reset').onclick=newConversation;
+document.getElementById('hardreset').onclick=()=>{
+  localStorage.removeItem("pinisse_tts");
+  newConversation();
+  populateAndRestoreVoices();
+};
+langSel.addEventListener('change',()=>{
+  const [code,name]=langSel.value.split("|");
+  setLang(code,name);
+  newConversation();
+  populateAndRestoreVoices();
+  if(SR&&rec)rec.lang=code;
+});
+
+/* ---------- STT ---------- */
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const micBtn=document.getElementById('mic');
+const micStatus=document.getElementById('micStatus');
+let rec=null;
+if(SR){
+  rec=new SR(); rec.lang=currentLang().code; rec.interimResults=true; rec.maxAlternatives=1;
+  let finalText="";
+  let lastInterim="";
+  let listening=false;
+  let startPending=false;
+  let stopWhenStarted=false;
+  const setListening=on=>{
+    listening=on;
+    startPending=false;
+    micBtn.setAttribute("aria-pressed", on ? "true" : "false");
+  };
+  const stopListening=()=>{
+    if(startPending && !listening){
+      stopWhenStarted=true;
+      return;
+    }
+    if(!listening) return;
+    try{rec.stop();}catch{}
+  };
+  rec.onstart=()=>{
+    setListening(true);
+    micStatus.textContent="Lyssnar … släpp för att skicka";
+    if(stopWhenStarted){
+      stopWhenStarted=false;
+      setTimeout(stopListening, 0);
+    }
+  };
+  rec.onerror=e=>{micStatus.textContent="Fel: "+e.error; startPending=false; stopWhenStarted=false; setListening(false);};
+  rec.onend=()=>{
+    micStatus.textContent=""; startPending=false; stopWhenStarted=false; setListening(false);
+    const spoken=(finalText || lastInterim).trim();
+    finalText="";
+    lastInterim="";
+    if(spoken){
+      document.getElementById('q').value=spoken;
+      document.getElementById('send').click();
+    }
+  };
+  rec.onresult=ev=>{
+    let interim="";
+    for(let i=ev.resultIndex;i<ev.results.length;i++){
+      const t=ev.results[i][0].transcript;
+      if(ev.results[i].isFinal) finalText+=t+" ";
+      else interim+=t;
+    }
+    lastInterim=interim;
+    micStatus.textContent=interim?("Lyssnar … "+interim):"Lyssnar …";
+  };
+  micBtn.addEventListener('pointerdown', e=>{
+    e.preventDefault();
+    if(listening) return;
+    try{speechSynthesis.cancel();}catch{}
+    try{
+      startPending=true;
+      rec.start();
+      window.addEventListener('pointerup', stopListening, { once:true });
+      window.addEventListener('pointercancel', stopListening, { once:true });
+    }catch{startPending=false;}
+  });
+  micBtn.addEventListener('keydown', e=>{
+    if(e.key!==" " && e.key!=="Enter") return;
+    e.preventDefault();
+    if(listening) return;
+    try{speechSynthesis.cancel();}catch{}
+    try{startPending=true; rec.start();}catch{startPending=false;}
+  });
+  micBtn.addEventListener('keyup', e=>{
+    if(e.key===" " || e.key==="Enter") stopListening();
+  });
+}else{
+  micBtn.disabled=true;
+  micStatus.textContent="Mikrofonstöd saknas.";
+}
+
+/* ---------- Send ---------- */
+async function send(){
+  const qEl=document.getElementById('q');
+  const out=document.getElementById('out');
+  const q=qEl.value.trim();
+  if(!q) return;
+
+  messages[0]={role:"system",content:buildSystemPrompt()};
+  messages.push({role:"user",content:q});
+  trimHistory(1500); saveChat(); renderLog();
+
+  out.textContent=(currentLang().code.startsWith("sv")?"Tänker...":"Thinking...");
+  const r=await fetch("/api/chat",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({
+      model: "qwen3:8b",
+      messages,
+      temperature: 0.4,
+      top_p: 0.9,
+      stream: false
+    })
+  });
+
+  const j = await r.json();
+  let text = j.choices?.[0]?.message?.content ?? JSON.stringify(j,null,2);
+
+  // --- Plocka ut ev. ÅTGÄRD-rad från Nisse ---
+  let action = null;   // t.ex. "datarum_on", "datarum_dim", "coffee_on", "mysrum_on", "projector_on"
+  let dimPct = null;
+
+  const actionMatch = text.match(/ÅTGÄRD:\s*([a-zA-Z0-9_]+(?:_(\d{1,3})%?)?)/i);
+  if (actionMatch) {
+    const code = actionMatch[1].toLowerCase(); // t.ex. "datarum_dim_30%" eller "coffee_on"
+
+    if (code === "datarum_on") {
+      action = "datarum_on";
+    } else if (code === "datarum_off") {
+      action = "datarum_off";
+    } else if (code.startsWith("datarum_dim_")) {
+      const numMatch = code.match(/dim_(\d{1,3})/);
+      if (numMatch) {
+        const p = parseInt(numMatch[1], 10);
+        if (!Number.isNaN(p)) {
+          dimPct = Math.max(1, Math.min(100, p));
+          action = "datarum_dim";
+        }
+      }
+    } else if (code === "coffee_on") {
+      action = "coffee_on";
+    } else if (code === "coffee_off") {
+      action = "coffee_off";
+    } else if (code === "mysrum_on") {
+      action = "mysrum_on";
+    } else if (code === "mysrum_off") {
+      action = "mysrum_off";
+    } else if (code === "projector_on") {
+      action = "projector_on";
+    } else if (code === "projector_off") {
+      action = "projector_off";
+    }
+
+    // Ta bort ÅTGÄRD-raden ur den text som visas i chatten
+    text = text.replace(actionMatch[0], "").trim();
+  }
+
+  out.textContent = text;
+  messages.push({role:"assistant",content:text});
+  saveChat(); renderLog(); speak(text); qEl.value="";
+
+  // --- Utför HA-åtgärd, om någon ---
+  if (action === "datarum_on") {
+    hookDirect("pinisse_light_datarum_on");
+  } else if (action === "datarum_off") {
+    hookDirect("pinisse_light_datarum_off");
+  } else if (action === "datarum_dim" && dimPct != null) {
+    dimTo(dimPct);
+  } else if (action === "coffee_on") {
+    hookDirect("pinisse_coffee_on");
+  } else if (action === "coffee_off") {
+    hookDirect("pinisse_coffee_off");
+  } else if (action === "mysrum_on") {
+    hookDirect("pinisse_mysrum_on");
+  } else if (action === "mysrum_off") {
+    hookDirect("pinisse_mysrum_off");
+  } else if (action === "projector_on") {
+    hookDirect("pinisse_projector_on");
+  } else if (action === "projector_off") {
+    hookDirect("pinisse_projector_off");
+  }
+}
+
+document.getElementById('send').onclick=send;
+document.getElementById('q').addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter')send();
+});
+</script>

@@ -1,0 +1,14 @@
+bin/
+include/
+lib/
+lib64/
+pyvenv.cfg
+__pycache__/
+*.py[cod]
+
+cert.pem
+key.pem
+
+.env
+.venv/
+venv/
